@@ -1,64 +1,63 @@
 import ccxt, requests, os, time
-import pandas as pd
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-
-def get_rsi(prices):
-    s = pd.Series(prices)
-    d = s.diff()
-    g = d.where(d>0,0).rolling(14).mean()
-    l = -d.where(d<0,0).rolling(14).mean()
-    rs = g/l
-    return float((100-(100/(1+rs))).iloc[-1])
 
 def send(msg):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
     except:
         pass
 
+def rsi(prices):
+    gains = 0
+    losses = 0
+    for i in range(1, 15):
+        diff = prices[-i] - prices[-i-1]
+        if diff > 0:
+            gains += diff
+        else:
+            losses -= diff
+    if losses == 0:
+        return 100
+    rs = gains / losses
+    return 100 - (100 / (1 + rs))
+
 exchanges = {
     "binance": ccxt.binance({"enableRateLimit": True}),
-    "bitget": ccxt.bitget({"enableRateLimit": True}),
-    "okx": ccxt.okx({"enableRateLimit": True})
+    "bitget": ccxt.bitget({"enableRateLimit": True})
 }
 
-coins = ["BTC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT","MAGIC/USDT:USDT"]
-
-last_time = {}
+coins = ["BTC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT"]
 
 for name, ex in exchanges.items():
     for coin in coins:
         try:
-            tk = ex.fetch_ticker(coin)
-            price = tk.get("last")
-            chg = tk.get("percentage")
-            if not price or chg is None:
-                continue
-            qv = tk.get("quoteVolume") or 0
-            bv = tk.get("baseVolume") or 0
-            vol_m = (qv if qv>0 else bv*price)/1000000
-            if vol_m < 10:
-                continue
-            if abs(chg) > 25:
-                continue
-            fr = float(ex.fetch_funding_rate(coin)["fundingRate"])
-            ohlcv = ex.fetch_ohlcv(coin, "1m", limit=100)
-            rsi = get_rsi([c[4] for c in ohlcv])
-            if coin in last_time and time.time()-last_time[coin] < 3600:
-                continue
-            side = None
-            if fr <= -0.002 and rsi < 70:
-                side = "SHORT"
-            elif fr >= 0.002 and rsi > 30:
-                side = "LONG"
-            if not side:
-                continue
-            last_time[coin] = time.time()
-            emoji = "🔴" if side=="SHORT" else "🟢"
-            txt = f"{emoji} {side} KARO {coin}\n💰 Price: ${price} ({chg:.2f}%)\n📦 Vol: ${vol_m:.1f}M\n📈 Fund: {fr*100:.4f}%\n📊 RSI: {rsi:.1f}\n🏦 Ex: {name}"
+            t = ex.fetch_ticker(coin)
+            price = t["last"]
+            change = t["percentage"] or 0
+            if not price: continue
+            if abs(change) > 25: continue
+
+            qv = t.get("quoteVolume") or 0
+            bv = t.get("baseVolume") or 0
+            vol = (qv if qv>0 else bv*price) / 1000000
+            if vol < 10: continue
+
+            f = ex.fetch_funding_rate(coin)
+            funding = float(f["fundingRate"])
+            ohlcv = ex.fetch_ohlcv(coin, "1m", limit=30)
+            closes = [c[4] for c in ohlcv]
+            r = rsi(closes)
+
+            sig = None
+            if funding <= -0.002 and r < 70: sig = "SHORT"
+            if funding >= 0.002 and r > 30: sig = "LONG"
+            if not sig: continue
+
+            icon = "🔴" if sig=="SHORT" else "🟢"
+            txt = f"{icon} {sig} KARO {coin} ({name})\nPrice ${price} ({change:.2f}%)\nVol ${vol:.1f}M\nFund {funding*100:.4f}%\nRSI {r:.1f}"
             send(txt)
         except:
             continue
