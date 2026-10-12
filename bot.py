@@ -21,7 +21,64 @@ for ex_name, ex in EXCHANGES.items():
             ticker = ex.fetch_ticker(coin)
             funding = ex.fetch_funding_rate(coin)['fundingRate']*100
             price = ticker['last']
-            volume = ticker['quoteVolume'] or 0
+            import ccxt, requests, os, time
+import pandas as pd
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+EXCHANGES = {
+    'binance': ccxt.binance({'enableRateLimit': True}),
+    'bitget': ccxt.bitget({'enableRateLimit': True}),
+    'okx': ccxt.okx({'enableRateLimit': True})
+}
+
+COINS = ['BTC/USDT:USDT','ETH/USDT:USDT','SOL/USDT:USDT','MAGIC/USDT:USDT','RSR/USDT:USDT']
+
+PUMP_LIMIT = 25.0
+MIN_VOL_M = 10.0
+SHORT_FUND = -0.0020
+LONG_FUND = 0.0020
+last_signal = {}
+
+def get_rsi(p):
+    s=pd.Series(p); d=s.diff()
+    g=d.where(d>0,0).rolling(14).mean()
+    l=-d.where(d<0,0).rolling(14).mean()
+    rs=g/l; rsi=100-(100/(1+rs))
+    return float(rsi.iloc[-1])
+
+def send(msg):
+    try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+    except: pass
+
+for ex_name, ex in EXCHANGES.items():
+    for coin in COINS:
+        try:
+            t=ex.fetch_ticker(coin)
+            price=t['last']; change=t['percentage']
+            if price is None or change is None: continue
+            qvol=t.get('quoteVolume') or 0; bvol=t.get('baseVolume') or 0
+            vol=qvol if qvol>0 else bvol*price
+            vol_m=vol/1_000_000
+            fund=float(ex.fetch_funding_rate(coin)['fundingRate'])
+            if vol_m < MIN_VOL_M: continue
+            if abs(change) > PUMP_LIMIT: continue
+            if coin in last_signal and time.time()-last_signal[coin]<3600: continue
+            ohlcv=ex.fetch_ohlcv(coin,'1m',limit=100)
+            closes=[c[4] for c in ohlcv]; rsi=get_rsi(closes)
+            side=None
+            if fund<=SHORT_FUND and rsi<70: side="SHORT"
+            elif fund>=LONG_FUND and rsi>30: side="LONG"
+            if not side: continue
+            last_signal[coin]=time.time()
+            color="🔴" if side=="SHORT" else "🟢"
+            msg=f"{color} {side} KARO {coin}\n💰 Price: ${price} ({change:.2f}%)\n📦 Vol: ${vol_m:.1f}M\n📈 Fund: {fund*100:.4f}%\n📊 RSI: {rsi:.1f}\n🏦 Ex: {ex_name}"
+            send(msg)
+            print(msg)
+        except Exception as e:
+            print(f"Err {coin}: {e}")
+        time.sleep(0.3)
             change = ticker['percentage'] or 0
             vol = f"${volume/1e9:.2f}B" if volume>=1e9 else f"${volume/1e6:.1f}M"
             sig=""
